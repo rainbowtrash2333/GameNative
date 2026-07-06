@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest package="com.yourapp.game1"
+    android:sharedUserId="app.gamenative">
+
+    <application
+        android:label="游戏名称"
+        android:icon="@mipmap/ic_launcher_game">
+
+        <!-- 游戏元数据: Runtime APK 的 GameScanner 通过 PackageManager 读取 -->
+        <meta-data android:name="game_id" android:value="your-game-id" />
+        <meta-data android:name="game_name" android:value="游戏显示名称" />
+        <meta-data android:name="game_launch_file" android:value="game.exe" />
+
+        <!-- 可选: 覆盖默认容器配置 -->
+        <!--
+        <meta-data android:name="game_wine_version" android:value="proton-10.0-4" />
+        <meta-data android:name="game_emulator" android:value="box64" />
+        <meta-data android:name="game_dxvk_version" android:value="2.7.1" />
+        <meta-data android:name="game_vkd3d_version" android:value="3.0.1" />
+        <meta-data android:name="game_renderer" android:value="virgl" />
+        <meta-data android:name="game_resolution" android:value="1280x720" />
+        -->
+
+        <!-- 首次安装自动解压器 (无桌面图标, 无 UI) -->
+        <activity
+            android:name="com.yourapp.gameinit.GameInitializerActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.NoDisplay"
+            android:noHistory="true"
+            android:excludeFromRecents="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+    </application>
+</manifest>

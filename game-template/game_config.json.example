@@ -1,0 +1,23 @@
+{
+  "gameId": "your-game-id",
+  "gameName": "游戏名称",
+  "version": "1.0.0",
+  "packageName": "com.yourapp.game1",
+  "launchFile": "game.exe",
+  "launchArgs": "",
+  "containerConfig": {
+    "wineVersion": "proton-10.0-4",
+    "emulator": "box64",
+    "dxvkVersion": "2.7.1",
+    "vkd3dVersion": "3.0.1",
+    "renderer": "virgl",
+    "resolution": "1280x720"
+  },
+  "envVars": {
+    "DXVK_HUD": "0",
+    "WINEDLLOVERRIDES": "d3d9=n;d3d11=n;dxgi=n",
+    "WINEDEBUG": "-all"
+  },
+  "estimatedSize": "0",
+  "screenOrientation": "landscape"
+}
