@@ -1,5 +1,8 @@
 package app.gamenative.runtime
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,6 +27,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -31,49 +36,130 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen() {
     val context = LocalContext.current
-    val scanner = remember { GameScanner(context) }
-    val games by remember { mutableStateOf(scanner.scanInstalledGames()) }
+    val scope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
+    val gameManager = remember { GameManager(context) }
+
+    var games by remember { mutableStateOf(gameManager.scanInstalledGames()) }
+    var isImporting by remember { mutableStateOf(false) }
+
+    // SAF 文件选择器: 选择 ZIP 文件
+    val importLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri == null || isImporting) return@rememberLauncherForActivityResult
+
+        isImporting = true
+        scope.launch(Dispatchers.IO) {
+            try {
+                val tempZip = File(context.cacheDir, "import_${System.currentTimeMillis()}.zip")
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    tempZip.outputStream().use { output -> input.copyTo(output) }
+                } ?: run {
+                    withContext(Dispatchers.Main) {
+                        snackbarHostState.showSnackbar("无法读取文件")
+                        isImporting = false
+                    }
+                    return@launch
+                }
+
+                val result = gameManager.importGame(tempZip.absolutePath)
+
+                withContext(Dispatchers.Main) {
+                    when (result) {
+                        is ImportResult.Success -> {
+                            snackbarHostState.showSnackbar("${result.config.gameName} 导入成功")
+                            games = gameManager.scanInstalledGames()
+                        }
+                        is ImportResult.Error -> {
+                            snackbarHostState.showSnackbar(result.message)
+                        }
+                    }
+                    isImporting = false
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    snackbarHostState.showSnackbar("导入失败: ${e.message}")
+                    isImporting = false
+                }
+            }
+        }
+    }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("GameNative Runtime") },
+                title = { Text("GameNative") },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primaryContainer,
                 )
             )
-        }
+        },
+        snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { paddingValues ->
-        if (games.isEmpty()) {
-            EmptyState(modifier = Modifier.padding(paddingValues))
-        } else {
-            GameList(
-                games = games,
-                contentPadding = paddingValues,
-                onPlayClick = { game ->
-                    // 启动游戏 (在后台线程执行)
-                    val launcher = GameLauncher(context)
-                    Thread { launcher.launch(game) }.start()
+        when {
+            isImporting -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(paddingValues),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        CircularProgressIndicator()
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text("正在导入游戏...")
+                    }
                 }
-            )
+            }
+            games.isEmpty() -> {
+                EmptyState(
+                    onImportClick = {
+                        importLauncher.launch(arrayOf("application/zip", "application/x-zip-compressed", "*/*"))
+                    },
+                    modifier = Modifier.padding(paddingValues)
+                )
+            }
+            else -> {
+                GameList(
+                    games = games,
+                    contentPadding = paddingValues,
+                    onPlayClick = { game ->
+                        val launcher = GameLauncher(context)
+                        Thread { launcher.launch(game) }.start()
+                    },
+                    onDeleteClick = { game ->
+                        gameManager.deleteGame(game.gameId)
+                        games = gameManager.scanInstalledGames()
+                    },
+                    onImportClick = {
+                        importLauncher.launch(arrayOf("application/zip", "application/x-zip-compressed", "*/*"))
+                    }
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun EmptyState(modifier: Modifier = Modifier) {
+private fun EmptyState(onImportClick: () -> Unit, modifier: Modifier = Modifier) {
     Box(
         modifier = modifier.fillMaxSize(),
         contentAlignment = Alignment.Center
@@ -82,21 +168,30 @@ private fun EmptyState(modifier: Modifier = Modifier) {
             Icon(
                 imageVector = Icons.Default.VideogameAsset,
                 contentDescription = null,
-                modifier = Modifier.size(64.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(80.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
             )
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(20.dp))
             Text(
-                text = "没有检测到已安装的游戏",
-                style = MaterialTheme.typography.titleMedium,
+                text = "还没有游戏",
+                style = MaterialTheme.typography.titleLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                text = "请安装游戏 APK 后刷新",
+                text = "导入游戏 ZIP 包即可开玩",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
             )
+            Spacer(modifier = Modifier.height(32.dp))
+            Button(
+                onClick = onImportClick,
+                modifier = Modifier.width(200.dp),
+            ) {
+                Icon(Icons.Default.Add, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("导入游戏")
+            }
         }
     }
 }
@@ -106,6 +201,8 @@ private fun GameList(
     games: List<InstalledGame>,
     contentPadding: PaddingValues,
     onPlayClick: (InstalledGame) -> Unit,
+    onDeleteClick: (InstalledGame) -> Unit,
+    onImportClick: () -> Unit,
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -117,8 +214,30 @@ private fun GameList(
         ),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        items(games, key = { it.packageName }) { game ->
-            GameCard(game = game, onPlayClick = { onPlayClick(game) })
+        item {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "我的游戏 (${games.size})",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                IconButton(onClick = onImportClick) {
+                    Icon(Icons.Default.Add, contentDescription = "导入游戏")
+                }
+            }
+        }
+
+        items(games, key = { it.gameId }) { game ->
+            GameCard(
+                game = game,
+                onPlayClick = { onPlayClick(game) },
+                onDeleteClick = { onDeleteClick(game) },
+            )
         }
     }
 }
@@ -127,6 +246,7 @@ private fun GameList(
 private fun GameCard(
     game: InstalledGame,
     onPlayClick: () -> Unit,
+    onDeleteClick: () -> Unit,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -138,12 +258,20 @@ private fun GameCard(
                 .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // 游戏图标占位 (后续可通过 PackageManager 加载真实图标)
-            GameIcon()
+            Box(
+                modifier = Modifier.size(56.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Default.VideogameAsset,
+                    contentDescription = null,
+                    modifier = Modifier.size(40.dp),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
 
             Spacer(modifier = Modifier.width(16.dp))
 
-            // 游戏信息
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = game.gameName,
@@ -160,7 +288,14 @@ private fun GameCard(
                 )
             }
 
-            // 启动按钮
+            IconButton(onClick = onDeleteClick) {
+                Icon(
+                    imageVector = Icons.Default.Delete,
+                    contentDescription = "删除游戏",
+                    tint = MaterialTheme.colorScheme.error,
+                )
+            }
+
             IconButton(onClick = onPlayClick) {
                 Icon(
                     imageVector = Icons.Default.PlayArrow,
@@ -169,22 +304,5 @@ private fun GameCard(
                 )
             }
         }
-    }
-}
-
-@Composable
-private fun GameIcon(
-    icon: ImageVector = Icons.Default.VideogameAsset,
-) {
-    Box(
-        modifier = Modifier.size(56.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            modifier = Modifier.size(40.dp),
-            tint = MaterialTheme.colorScheme.primary,
-        )
     }
 }

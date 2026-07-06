@@ -35,7 +35,7 @@ data class ContainerConfig(
 
 /**
  * 已安装游戏的运行时表示。
- * 由 GameScanner 扫描生成，供 UI 展示和 GameLauncher 使用。
+ * 由 GameManager 扫描生成，供 UI 展示和 GameLauncher 使用。
  */
 data class InstalledGame(
     val gameId: String,
