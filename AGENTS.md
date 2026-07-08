@@ -1,6 +1,8 @@
-# GameNative
+# GameNative (fork)
 
-Android app that runs PC games (Steam, Epic, GOG, Amazon) natively on Android via Wine/Proton/Winlator. GPL 3.0.
+基于 [GameNative](https://github.com/utkarshdalal/GameNative) 二次开发。保留核心引擎（Wine/Proton/Winlator 容器运行、Steam/Epic/GOG 下载、云存档），**重写 UI，简化为直接导入 ZIP 游戏包**。GPL 3.0。
+
+**核心原则：尽量不修改上游源代码** — 新代码放到 `runtime/` 包，只通过 intent / event / 接口与上游交互。方便 merge 上游更新。
 
 ## Setup & Build
 
@@ -25,19 +27,23 @@ Android app that runs PC games (Steam, Epic, GOG, Amazon) natively on Android vi
 
 ## Architecture
 
-Single-Activity app with Compose navigation, **but there are two Activity classes**:
+Single-Activity app with Compose navigation, **fork 的架构分层**:
 
 ```
-PluviaApp (@HiltAndroidApp, SplitCompatApplication)
-  ├── MainActivity (@AndroidEntryPoint)       ← the "full" activity (Hilt, Steam/Epic/GOG services)
-  │     └── PluviaMain() — root @Composable
-  │           └── NavHost routes: Login → Home → XServer → Settings
-  └── RuntimeMainActivity (no Hilt, no services)  ← LAUNCHER (via activity-alias)
-        └── HomeScreen() — minimal game list
+PluviaApp (@HiltAndroidApp, SplitCompatApplication)  ← 上游代码，尽量不改
+  ├── MainActivity (@AndroidEntryPoint)               ← 上游代码，尽量不改
+  │     └── PluviaMain() — root @Composable           ← 上游代码（未来会全替换）
+  │           └── NavHost routes
+  └── RuntimeMainActivity (no Hilt) ← LAUNCHER         ← fork 新代码
+        └── HomeScreen() — 游戏列表 + ZIP 导入          ← fork 新代码
+             ├── GameManager (扫描/导入/删除 ZIP 游戏)
+             ├── GameLauncher (通过 Intent 启动游戏)
+             └── GameConfig / InstalledGame (数据模型)
 ```
 
-- **`RuntimeMainActivity`** (`runtime/RuntimeMainActivity.kt`) is the actual launcher (activity-alias `MainActivityAliasDefault`). It's a lightweight, non-Hilt activity that only shows a game list. Used for the runtime APK approach.
-- **`MainActivity`** (`MainActivity.kt`) is `@AndroidEntryPoint` with full Hilt DI, Steam/Epic/GOG services, `PluviaMain()` Compose root. It responds to `pluvia://` deeplinks and `LAUNCH_GAME` intents. An alt alias (`MainActivityAliasAlt`, disabled by default) can target it as the launcher.
+- **`runtime/` 包** (`app/src/main/java/app/gamenative/runtime/`) — **本文档所有的自定义代码**。GameManager 扫描 `filesDir/games/{gameId}/` 下的 ZIP 导入的游戏，GameLauncher 构建 intent 启动上游的 MainActivity 来运行游戏。
+- **`MainActivity`** (`MainActivity.kt`) — 上游的 `@AndroidEntryPoint` Activity，通过 `LAUNCH_GAME` intent 和 `app_id` extra 接收启动请求。**不改它**。
+- **ZIP 导入方案**：用户通过 SAF 选择 `game.zip`（内含 `game_config.json` + 游戏文件），GameManager 解压到 `filesDir/games/{gameId}/`，GameLauncher 构建 intent 启动上游引擎。
 - **Source root**: `app/src/main/java/app/gamenative/`
 - **Native root**: `app/src/main/cpp/` (CMake files exist but native is shipped as **prebuilt jniLibs** — all cmake blocks are commented out in `build.gradle.kts`)
 - **Dynamic feature**: `ubuntufs/` (delivers Ubuntu filesystem at runtime via SplitCompat)
@@ -84,6 +90,8 @@ Build types: `debug`, `release`, `release-signed` (dual keystore), `release-gold
 | `di/` | 2 Hilt modules: `DatabaseModule`, `AppThemeModule` (both `@SingletonComponent`) |
 | `events/` | Typed event bus: `AndroidEvent` (26 types) + `SteamEvent` + `EventDispatcher` |
 | `utils/` | ~81 utility files — container ops, Steam utils, downloads, custom game scanner, manifest installer |
+
+> 除 `runtime/` 外，以上所有包均为上游代码，**尽量只读**。
 
 ## DI & Database
 
@@ -134,6 +142,11 @@ Git submodules:
 
 ## Important Constraints
 
+- **永远不修改上游源代码**（`service/`, `gamefixes/`, `workshop/`, `ui/`, `db/`, `di/`, `events/`, `utils/`, `MainActivity.kt`, `PluviaApp.kt`）。新代码必须只放在 `runtime/` 包。只能通过 intent / event / 接口与上游交互。
+- **ZIP 导入的游戏通过 intent 启动上游引擎**：`GameLauncher` 构建 `app.gamenative.LAUNCH_GAME` intent 发送给 `MainActivity`。Intent extra 必须严格遵守 `IntentLaunchManager` 的预期：
+  - `"app_id"` (Int) — 游戏数字 ID
+  - `"game_source"` (String) — 如 `"CUSTOM"`
+  - `"container_config"` (JSON, 可选) — `ContainerData` 格式
 - **Never commit secrets**. `local.properties` is gitignored. `app/keystores/` is gitignored except `.gitkeep`.
 - **GitHub issues are auto-closed** (non-contributors). Direct users to Discord. Do not open issues.
 - **ProGuard**: `-dontobfuscate` is set. Keep rules for JavaSteam, SpongyCastle, Meta Horizon, Timber.
