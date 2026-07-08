@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import timber.log.Timber
 import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -60,41 +61,52 @@ fun HomeScreen() {
     var games by remember { mutableStateOf(gameManager.scanInstalledGames()) }
     var isImporting by remember { mutableStateOf(false) }
 
-    // SAF 文件选择器: 选择 ZIP 文件
+    Timber.tag("HomeScreen").d("HomeScreen composed, %d game(s) found", games.size)
+
     val importLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
-        if (uri == null || isImporting) return@rememberLauncherForActivityResult
+        if (uri == null || isImporting) {
+            Timber.tag("HomeScreen").w("import cancelled: uri=%s, isImporting=%s", uri, isImporting)
+            return@rememberLauncherForActivityResult
+        }
 
+        Timber.tag("HomeScreen").i("import requested, uri=%s", uri)
         isImporting = true
         scope.launch(Dispatchers.IO) {
             try {
                 val tempZip = File(context.cacheDir, "import_${System.currentTimeMillis()}.zip")
-                context.contentResolver.openInputStream(uri)?.use { input ->
+                val copied = context.contentResolver.openInputStream(uri)?.use { input ->
                     tempZip.outputStream().use { output -> input.copyTo(output) }
-                } ?: run {
+                }
+                if (copied == null) {
+                    Timber.tag("HomeScreen").w("cannot open input stream for %s", uri)
                     withContext(Dispatchers.Main) {
                         snackbarHostState.showSnackbar("无法读取文件")
                         isImporting = false
                     }
                     return@launch
                 }
+                Timber.tag("HomeScreen").i("copied %d bytes to %s", copied, tempZip.path)
 
                 val result = gameManager.importGame(tempZip.absolutePath)
 
                 withContext(Dispatchers.Main) {
                     when (result) {
                         is ImportResult.Success -> {
+                            Timber.tag("HomeScreen").i("import success: %s", result.config.gameName)
                             snackbarHostState.showSnackbar("${result.config.gameName} 导入成功")
                             games = gameManager.scanInstalledGames()
                         }
                         is ImportResult.Error -> {
+                            Timber.tag("HomeScreen").w("import error: %s", result.message)
                             snackbarHostState.showSnackbar(result.message)
                         }
                     }
                     isImporting = false
                 }
             } catch (e: Exception) {
+                Timber.tag("HomeScreen").e(e, "import exception")
                 withContext(Dispatchers.Main) {
                     snackbarHostState.showSnackbar("导入失败: ${e.message}")
                     isImporting = false
@@ -142,14 +154,24 @@ fun HomeScreen() {
                     games = games,
                     contentPadding = paddingValues,
                     onPlayClick = { game ->
+                        Timber.tag("HomeScreen").i("play clicked: %s (id=%s)", game.gameName, game.gameId)
                         val launcher = GameLauncher(context)
-                        Thread { launcher.launch(game) }.start()
+                        Thread {
+                            try {
+                                launcher.launch(game)
+                            } catch (e: Exception) {
+                                Timber.tag("HomeScreen").e(e, "launch failed for %s", game.gameName)
+                            }
+                        }.start()
                     },
                     onDeleteClick = { game ->
+                        Timber.tag("HomeScreen").i("delete clicked: %s (id=%s)", game.gameName, game.gameId)
                         gameManager.deleteGame(game.gameId)
                         games = gameManager.scanInstalledGames()
+                        Timber.tag("HomeScreen").d("after delete: %d game(s) remaining", games.size)
                     },
                     onImportClick = {
+                        Timber.tag("HomeScreen").i("import button clicked")
                         importLauncher.launch(arrayOf("application/zip", "application/x-zip-compressed", "*/*"))
                     }
                 )

@@ -8,22 +8,22 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
+import timber.log.Timber
 
 /**
- * Runtime APK 的入口 Activity。
+ * Runtime 入口 Activity。
  *
  * 与原 GameNative 的 MainActivity 不同:
- *   - 不使用 Hilt DI (减少依赖)
+ *   - 不使用 Hilt DI
  *   - 不初始化 Steam/Epic/GOG 服务
  *   - 只显示游戏列表 UI
  *   - 通过 sharedUserId 发现已安装的游戏 APK
- *
- * AndroidManifest.xml 中将此 Activity 注册为 LAUNCHER。
  */
 class RuntimeMainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Timber.tag("RuntimeMainActivity").i("onCreate")
         enableEdgeToEdge()
 
         setContent {

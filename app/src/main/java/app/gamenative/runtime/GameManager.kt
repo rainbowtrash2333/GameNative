@@ -1,19 +1,22 @@
 package app.gamenative.runtime
 
 import android.content.Context
+import app.gamenative.utils.FileUtils
 import kotlinx.serialization.json.Json
+import timber.log.Timber
 import java.io.File
 import java.util.zip.ZipFile
 
 /**
  * 本地游戏管理器: 扫描 + 导入 ZIP 游戏包。
  *
- * 单 APK 方案: 用户下载 game.zip(含 game_config.json + 游戏文件),
- * 通过 SAF 文件选择器导入, 管理器解压到 filesDir/games/{gameId}/。
+ * 用户通过 SAF 选择 game.zip (内含 game_config.json + 游戏文件),
+ * 管理器解压到 filesDir/games/{gameId}/。
  */
 class GameManager(private val context: Context) {
 
     companion object {
+        private const val TAG = "GameManager"
         const val GAMES_DIR = "games"
         const val CONFIG_FILE = "game_config.json"
     }
@@ -23,18 +26,24 @@ class GameManager(private val context: Context) {
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    /** 扫描本地已安装的游戏 */
     fun scanInstalledGames(): List<InstalledGame> {
         val dir = gamesBaseDir
-        if (!dir.exists()) return emptyList()
+        if (!dir.exists()) {
+            Timber.tag(TAG).i("scanInstalledGames: games dir not found (%s), returning empty", dir.path)
+            return emptyList()
+        }
 
-        return dir.listFiles()
+        val games = dir.listFiles()
             ?.filter { it.isDirectory }
             ?.mapNotNull { gameDir ->
                 val configFile = File(gameDir, CONFIG_FILE)
-                if (!configFile.exists()) return@mapNotNull null
+                if (!configFile.exists()) {
+                    Timber.tag(TAG).w("scanInstalledGames: skipping %s (no %s)", gameDir.name, CONFIG_FILE)
+                    return@mapNotNull null
+                }
                 try {
                     val config = json.decodeFromString<GameConfig>(configFile.readText())
+                    val sizeBytes = FileUtils.calculateDirectorySize(gameDir)
                     InstalledGame(
                         gameId = config.gameId,
                         gameName = config.gameName,
@@ -42,43 +51,60 @@ class GameManager(private val context: Context) {
                         packageName = "",
                         config = config,
                         dataDir = gameDir,
-                        estimatedSize = formatSize(calculateDirSize(gameDir)),
-                    )
-                } catch (e: Exception) { null }
+                        estimatedSize = formatSize(sizeBytes),
+                    ).also {
+                        Timber.tag(TAG).d("scanInstalledGames: found '%s' (id=%s, size=%s)",
+                            config.gameName, config.gameId, it.estimatedSize)
+                    }
+                } catch (e: Exception) {
+                    Timber.tag(TAG).e(e, "scanInstalledGames: failed to parse %s", configFile.path)
+                    null
+                }
             }
             ?: emptyList()
+
+        Timber.tag(TAG).i("scanInstalledGames: found %d game(s)", games.size)
+        return games
     }
 
     /**
      * 导入游戏 ZIP 文件。
-     * @param zipPath  ZIP 文件路径 (SAF 复制到缓存后的路径)
-     * @return 导入结果 (成功/失败 + 错误消息)
+     * @param zipPath ZIP 文件路径 (SAF 复制到缓存后的路径)
+     * @return 导入结果
      */
     fun importGame(zipPath: String): ImportResult {
         val zipFile = File(zipPath)
-        if (!zipFile.exists()) return ImportResult.Error("ZIP file not found: $zipPath")
+        if (!zipFile.exists()) {
+            Timber.tag(TAG).w("importGame: ZIP not found at %s", zipPath)
+            return ImportResult.Error("ZIP file not found: $zipPath")
+        }
+        Timber.tag(TAG).i("importGame: starting import from %s (size=%d)", zipPath, zipFile.length())
 
         return try {
-            // 1. 验证 ZIP 内包含 game_config.json
             val configJson = readEntryFromZip(zipFile, CONFIG_FILE)
-                ?: return ImportResult.Error("ZIP 文件缺少 ${CONFIG_FILE}，请确认格式")
+                ?: return ImportResult.Error("ZIP 文件缺少 ${CONFIG_FILE}，请确认格式").also {
+                    Timber.tag(TAG).w("importGame: ZIP missing %s", CONFIG_FILE)
+                }
 
             val config = json.decodeFromString<GameConfig>(configJson)
+            Timber.tag(TAG).i("importGame: parsed config: gameId=%s, gameName=%s", config.gameId, config.gameName)
 
-            // 2. 解压到 filesDir/games/{gameId}/
             val targetDir = File(gamesBaseDir, config.gameId)
             if (targetDir.exists()) {
+                Timber.tag(TAG).w("importGame: target dir %s exists, removing", targetDir.path)
                 targetDir.deleteRecursively()
             }
             targetDir.mkdirs()
+            Timber.tag(TAG).d("importGame: extracting to %s", targetDir.path)
 
             extractZip(zipFile, targetDir)
 
-            // 3. 清理临时 ZIP 副本
             zipFile.delete()
+            Timber.tag(TAG).i("importGame: success for '%s' (id=%s)", config.gameName, config.gameId)
 
             ImportResult.Success(config)
         } catch (e: Exception) {
+            Timber.tag(TAG).e(e, "importGame: failed for %s", zipPath)
             ImportResult.Error("导入失败: ${e.message}")
         }
     }
@@ -86,7 +112,12 @@ class GameManager(private val context: Context) {
     /** 删除游戏 */
     fun deleteGame(gameId: String) {
         val gameDir = File(gamesBaseDir, gameId)
-        if (gameDir.exists()) gameDir.deleteRecursively()
+        if (gameDir.exists()) {
+            gameDir.deleteRecursively()
+            Timber.tag(TAG).i("deleteGame: deleted %s", gameId)
+        } else {
+            Timber.tag(TAG).w("deleteGame: game dir not found for %s", gameId)
+        }
     }
 
     // --- 内部 ---
@@ -97,10 +128,14 @@ class GameManager(private val context: Context) {
                 val entry = zip.getEntry(entryName) ?: return null
                 zip.getInputStream(entry).bufferedReader().readText()
             }
-        } catch (e: Exception) { null }
+        } catch (e: Exception) {
+            Timber.tag(TAG).e(e, "readEntryFromZip: failed reading '%s' from %s", entryName, zipFile.name)
+            null
+        }
     }
 
     private fun extractZip(zipFile: File, targetDir: File) {
+        var extractedCount = 0
         ZipFile(zipFile).use { zip ->
             val entries = zip.entries()
             while (entries.hasMoreElements()) {
@@ -116,23 +151,19 @@ class GameManager(private val context: Context) {
                             input.copyTo(output)
                         }
                     }
-                    dest.setExecutable(true, false) // PE/ELF 可能需要执行权限
+                    dest.setExecutable(true, false)
+                    extractedCount++
                 }
             }
         }
-    }
-
-    private fun calculateDirSize(dir: File): Long {
-        var size = 0L
-        dir.walkTopDown().forEach { if (it.isFile) size += it.length() }
-        return size
+        Timber.tag(TAG).d("extractZip: extracted %d file(s) to %s", extractedCount, targetDir.path)
     }
 
     private fun formatSize(bytes: Long): String {
         return when {
-            bytes < 1024 * 1024 -> "${bytes / 1024} KB"
-            bytes < 1024 * 1024 * 1024 -> "${bytes / (1024 * 1024)} MB"
-            else -> "${"%.1f".format(bytes.toDouble() / (1024 * 1024 * 1024))} GB"
+            bytes < 1024L * 1024L -> "${bytes / 1024L} KB"
+            bytes < 1024L * 1024L * 1024L -> "${bytes / (1024L * 1024L)} MB"
+            else -> "${"%.1f".format(bytes.toDouble() / (1024L * 1024L * 1024L))} GB"
         }
     }
 }

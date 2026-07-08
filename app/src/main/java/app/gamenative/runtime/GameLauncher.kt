@@ -2,46 +2,78 @@ package app.gamenative.runtime
 
 import android.content.Context
 import android.content.Intent
+import app.gamenative.MainActivity
+import timber.log.Timber
 import java.io.File
 
+/**
+ * 启动已导入的游戏。
+ *
+ * 构建一个与 [app.gamenative.utils.IntentLaunchManager] 兼容的 Intent，
+ * 启动 [MainActivity] 进行游戏运行。
+ *
+ * Intent extras 必须与 IntentLaunchManager 的预期匹配:
+ *   - "app_id" (Int)          ← 游戏数字 ID
+ *   - "game_source" (String)   ← 游戏来源, 如 "CUSTOM"
+ *   - "container_config" (JSON, 可选) — 暂不传, 沿用容器默认配置
+ *
+ * 额外的 runtime_* extras 作为附加信息携带, IntentLaunchManager 忽略未知 key。
+ */
 class GameLauncher(private val context: Context) {
 
+    companion object {
+        private const val TAG = "GameLauncher"
+        private const val EXTRA_APP_ID = "app_id"
+        private const val EXTRA_GAME_SOURCE = "game_source"
+        private const val ACTION_LAUNCH_GAME = "app.gamenative.LAUNCH_GAME"
+    }
+
+    /**
+     * 启动游戏。
+     * @param game 待启动的游戏实例
+     * @throws IllegalStateException 如果可执行文件不存在
+     * @throws IllegalArgumentException 如果 gameId 不是有效正整数
+     */
     fun launch(game: InstalledGame) {
+        Timber.tag(TAG).i("launch(): gameId=%s, gameName=%s", game.gameId, game.gameName)
+
         val config = game.config
         val gameExe = File(game.dataDir, config.launchFile)
         if (!gameExe.exists()) {
-            throw IllegalStateException("Game executable not found: ${gameExe.absolutePath}")
+            val msg = "Game executable not found: ${gameExe.absolutePath}"
+            Timber.tag(TAG).e(msg)
+            throw IllegalStateException(msg)
         }
+        Timber.tag(TAG).i("Executable verified: %s (size=%d)", gameExe.absolutePath, gameExe.length())
 
-        val intent = Intent(context, Class.forName("app.gamenative.MainActivity")).apply {
-            action = "app.gamenative.LAUNCH_GAME"
+        val numericId = game.gameId.toIntOrNull()
+        if (numericId == null || numericId <= 0) {
+            val msg = "game.gameId='${game.gameId}' is not a valid positive integer"
+            Timber.tag(TAG).e(msg)
+            throw IllegalArgumentException(msg)
+        }
+        Timber.tag(TAG).d("Parsed gameId: %s -> %d", game.gameId, numericId)
+
+        val intent = Intent(context, MainActivity::class.java).apply {
+            action = ACTION_LAUNCH_GAME
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            putExtra(EXTRA_APP_ID, numericId)
+            putExtra(EXTRA_GAME_SOURCE, "CUSTOM")
             putExtra("runtime_game_id", game.gameId)
             putExtra("runtime_game_name", game.gameName)
             putExtra("runtime_game_exe_path", gameExe.absolutePath)
             putExtra("runtime_game_dir", game.dataDir.absolutePath)
-            putExtra("runtime_game_config", buildConfigJson(config))
         }
 
-        context.startActivity(intent)
-    }
+        Timber.tag(TAG).i("Starting MainActivity: action=%s, appId=%d, gameName=%s",
+            ACTION_LAUNCH_GAME, numericId, game.gameName)
 
-    private fun buildConfigJson(config: GameConfig): String = buildString {
-        val cc = config.containerConfig
-        appendLine("{")
-        appendLine("  \"wineVersion\": \"${cc.wineVersion}\",")
-        appendLine("  \"emulator\": \"${cc.emulator}\",")
-        appendLine("  \"dxvkVersion\": \"${cc.dxvkVersion}\",")
-        appendLine("  \"vkd3dVersion\": \"${cc.vkd3dVersion}\",")
-        appendLine("  \"renderer\": \"${cc.renderer}\",")
-        appendLine("  \"resolution\": \"${cc.resolution}\",")
-        appendLine("  \"envVars\": {")
-        config.envVars.entries.forEachIndexed { i, (k, v) ->
-            val comma = if (i < config.envVars.size - 1) "," else ""
-            appendLine("    \"$k\": \"$v\"$comma")
+        try {
+            context.startActivity(intent)
+            Timber.tag(TAG).i("MainActivity started for '%s' (id=%d)", game.gameName, numericId)
+        } catch (e: Exception) {
+            Timber.tag(TAG).e(e, "Failed to start MainActivity for '%s'", game.gameName)
+            throw e
         }
-        appendLine("  },")
-        appendLine("  \"launchArgs\": \"${config.launchArgs}\"")
-        append("}")
     }
 }
