@@ -1,7 +1,11 @@
 package app.gamenative.runtime
 
 import android.content.Context
+import app.gamenative.PrefManager
 import app.gamenative.utils.FileUtils
+import app.gamenative.utils.GameMetadata
+import app.gamenative.utils.GameMetadataManager
+import kotlin.math.abs
 import kotlinx.serialization.json.Json
 import timber.log.Timber
 import java.io.File
@@ -98,10 +102,12 @@ class GameManager(private val context: Context) {
             Timber.tag(TAG).d("importGame: extracting to %s", targetDir.path)
 
             extractZip(zipFile, targetDir)
-
             zipFile.delete()
-            Timber.tag(TAG).i("importGame: success for '%s' (id=%s)", config.gameName, config.gameId)
 
+            // 注册到上游 CustomGameScanner 系统, 使得 resolveGameAppId 能找到此游戏
+            registerWithCustomScanner(targetDir, config)
+
+            Timber.tag(TAG).i("importGame: success for '%s' (id=%s)", config.gameName, config.gameId)
             ImportResult.Success(config)
         } catch (e: Exception) {
             Timber.tag(TAG).e(e, "importGame: failed for %s", zipPath)
@@ -113,10 +119,42 @@ class GameManager(private val context: Context) {
     fun deleteGame(gameId: String) {
         val gameDir = File(gamesBaseDir, gameId)
         if (gameDir.exists()) {
+            unregisterFromCustomScanner(gameDir, gameId)
             gameDir.deleteRecursively()
             Timber.tag(TAG).i("deleteGame: deleted %s", gameId)
         } else {
             Timber.tag(TAG).w("deleteGame: game dir not found for %s", gameId)
+        }
+    }
+
+    /**
+     * 导入成功后, 将游戏注册到上游的 CustomGameScanner 系统中,
+     * 使得 resolveGameAppId(GameSource.CUSTOM_GAME) 能识别此游戏。
+     *
+     * 写入 .gamenative 文件 (包含稳定的 hashCode ID) +
+     * 将目录添加到 PrefManager.customGameManualFolders。
+     */
+    private fun registerWithCustomScanner(gameDir: File, config: GameConfig) {
+        val stableId = abs(config.gameId.hashCode()).let { if (it == 0) 1 else it }
+        Timber.tag(TAG).d("registerWithCustomScanner: gameId=%s -> stableId=%d", config.gameId, stableId)
+
+        GameMetadataManager.write(gameDir, GameMetadata(appId = stableId))
+
+        val folders = PrefManager.customGameManualFolders.toMutableSet()
+        if (folders.add(gameDir.absolutePath)) {
+            PrefManager.customGameManualFolders = folders
+            Timber.tag(TAG).i("Registered %s in CustomGameScanner (stableId=%d)", config.gameName, stableId)
+        } else {
+            Timber.tag(TAG).d("%s already registered in CustomGameScanner", config.gameName)
+        }
+    }
+
+    /** 删除时从 CustomGameScanner 取消注册 */
+    private fun unregisterFromCustomScanner(gameDir: File, gameId: String) {
+        val folders = PrefManager.customGameManualFolders.toMutableSet()
+        if (folders.remove(gameDir.absolutePath)) {
+            PrefManager.customGameManualFolders = folders
+            Timber.tag(TAG).i("Unregistered %s from CustomGameScanner", gameId)
         }
     }
 
