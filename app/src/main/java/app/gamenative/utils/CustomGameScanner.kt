@@ -366,12 +366,28 @@ object CustomGameScanner {
      */
     fun getLaunchExecutable(container: Container): String {
         val gameFolderPath = ContainerUtils.getADrivePath(container.drives) ?: return ""
+
+        // Check container's configured executable path
         val exe = container.executablePath
         if (exe.isNotEmpty()) {
             val fullPath = File(gameFolderPath, exe.replace('\\', File.separatorChar))
             if (fullPath.exists() && fullPath.isFile) return exe
-            // Stale or missing path — fall through to auto-detect
         }
+
+        // Check runtime game_config.json which has the definitive launchFile
+        val configFile = File(gameFolderPath, "game_config.json")
+        if (configFile.exists()) {
+            try {
+                val json = org.json.JSONObject(configFile.readText())
+                val launchFile = json.optString("launchFile", "")
+                if (launchFile.isNotEmpty()) {
+                    val fullPath = File(gameFolderPath, launchFile.replace('\\', File.separatorChar))
+                    if (fullPath.exists() && fullPath.isFile) return launchFile
+                }
+            } catch (_: Exception) { }
+        }
+
+        // Fallback to auto-detect
         return findUniqueExeRelativeToFolder(gameFolderPath) ?: ""
     }
 
@@ -755,9 +771,9 @@ object CustomGameScanner {
 
     // Helper function to check if game is installed to match pattern of GOG & Steam Service
     fun isGameInstalled(appId: Int): Boolean {
-        val isInstalled = findCustomGameById(appId) != null
-
-        return isInstalled
+        if (findCustomGameById(appId) != null) return true
+        // Fallback: check runtime-imported games
+        return resolveRuntimeGameFolder(appId) != null
     }
 
     /**
@@ -780,6 +796,38 @@ object CustomGameScanner {
             return null
         }
 
-        return findCustomGameById(expectedId)
+        // First check the regular cache (manually added folders)
+        val cached = findCustomGameById(expectedId)
+        if (cached != null) return cached
+
+        // Fallback: check runtime-imported games (filesDir/games/<gameId>/)
+        return resolveRuntimeGameFolder(expectedId)
+    }
+
+    /**
+     * Scans the runtime games directory (filesDir/games/) for a game whose
+     * gameId hash matches [numericId].  Returns the game folder path if found.
+     */
+    private fun resolveRuntimeGameFolder(numericId: Int): String? {
+        val dataDir = DownloadService.baseDataDirPath
+        if (dataDir.isEmpty()) return null
+
+        val runtimeGamesDir = File(dataDir, "files/games")
+        if (!runtimeGamesDir.exists()) return null
+
+        for (gameDir in runtimeGamesDir.listFiles() ?: return null) {
+            if (!gameDir.isDirectory) continue
+            val configFile = File(gameDir, "game_config.json")
+            if (!configFile.exists()) continue
+            try {
+                val text = configFile.readText()
+                val gameId = org.json.JSONObject(text).optString("gameId", "")
+                if (gameId.isNotEmpty() && abs(gameId.hashCode()).let { if (it == 0) 1 else it } == numericId) {
+                    Timber.tag("CustomGameScanner").d("resolveRuntimeGameFolder: matched %s -> %s", gameId, gameDir.path)
+                    return gameDir.absolutePath
+                }
+            } catch (_: Exception) { }
+        }
+        return null
     }
 }
