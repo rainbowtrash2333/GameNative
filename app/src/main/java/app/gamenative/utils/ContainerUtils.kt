@@ -1019,7 +1019,9 @@ object ContainerUtils {
             }
 
             GameSource.CUSTOM_GAME -> {
-                CustomGameScanner.getFolderPathFromAppId(appId)
+                val path = CustomGameScanner.getFolderPathFromAppId(appId)
+                Timber.tag("ContainerUtils").d("getOrCreateContainer: CUSTOM_GAME appId=%s -> folderPath=%s", appId, path)
+                path
             }
 
             GameSource.AMAZON -> {
@@ -1028,6 +1030,7 @@ object ContainerUtils {
             }
         }
 
+        Timber.tag("ContainerUtils").d("getOrCreateContainer: appId=%s gameFolderPath=%s", appId, gameFolderPath)
         if (gameFolderPath != null) {
             // Check if A: drive is already mapped to the correct path
             var hasCorrectADrive = false

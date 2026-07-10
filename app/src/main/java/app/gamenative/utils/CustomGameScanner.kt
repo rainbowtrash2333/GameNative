@@ -392,7 +392,10 @@ object CustomGameScanner {
     }
 
     fun findUniqueExeRelativeToFolder(folder: File): String? {
-        if (!folder.exists() || !folder.isDirectory) return null
+        if (!folder.exists() || !folder.isDirectory) {
+            Timber.tag("CustomGameScanner").w("findUniqueExeRelativeToFolder: folder not found: %s", folder.path)
+            return null
+        }
 
         fun File.isValidExe(): Boolean = this.isFile && this.name.endsWith(".exe", ignoreCase = true) &&
             !this.name.startsWith("unins", ignoreCase = true)
@@ -403,6 +406,7 @@ object CustomGameScanner {
             f.isFile && f.name.endsWith(".exe", ignoreCase = true) &&
                 !f.name.startsWith("unins", ignoreCase = true)
         }?.forEach { f ->
+            Timber.tag("CustomGameScanner").d("findUniqueExeRelativeToFolder: found root exe: %s", f.name)
             candidates.add(f.name)
         }
 
@@ -413,12 +417,14 @@ object CustomGameScanner {
                     !f.name.startsWith("unins", ignoreCase = true)
             }?.forEach { f ->
                 val rel = sd.name + "/" + f.name
+                Timber.tag("CustomGameScanner").d("findUniqueExeRelativeToFolder: found subdir exe: %s", rel)
                 candidates.add(rel)
             }
         }
 
-        // Keep only unique items
         val unique = candidates.distinct()
+        Timber.tag("CustomGameScanner").d("findUniqueExeRelativeToFolder: %d candidate(s) -> %d unique: %s",
+            candidates.size, unique.size, unique)
         return if (unique.size == 1) unique.first() else null
     }
 
