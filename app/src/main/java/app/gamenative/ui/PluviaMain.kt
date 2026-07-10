@@ -1277,6 +1277,9 @@ fun PluviaMain(
 
             val startDestination = rememberSaveable {
                 when {
+                    // 有 pending 游戏启动请求时跳过登录，直接进 Home
+                    MainActivity.hasPendingLaunchRequest() ->
+                        PluviaScreen.Home.route + "?offline=true"
                     SteamService.isLoggedIn -> PluviaScreen.Home.route + "?offline=false"
                     // skip login screen if any service has stored credentials
                     SteamUtils.hasStoredCredentials() ||
