@@ -462,7 +462,7 @@ class MainViewModel @Inject constructor(
     }
 
     fun launchApp(context: Context, appId: String) {
-        // Show booting splash before launching the app
+        Timber.tag("MainViewModel").i("launchApp: appId=%s", appId)
         viewModelScope.launch {
             viewModelScope.launch(Dispatchers.IO) {
                 libraryPlayHistoryDao.upsert(

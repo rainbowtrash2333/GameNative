@@ -167,6 +167,7 @@ private sealed class GameResolutionResult {
 private fun resolveGameAppId(context: Context, appId: String): GameResolutionResult {
     val gameSource = ContainerUtils.extractGameSourceFromContainerId(appId)
     val gameId = ContainerUtils.extractGameIdFromContainerId(appId)
+    Timber.tag("resolveGameAppId").d("entry: appId=%s gameSource=%s gameId=%d", appId, gameSource, gameId)
     val isInstalled = when (gameSource) {
         GameSource.STEAM -> {
             // isAppInstalled uses getAppInfoOf internally to derive the game dir name.
@@ -198,6 +199,7 @@ private fun resolveGameAppId(context: Context, appId: String): GameResolutionRes
     }
 
     if (!isInstalled) {
+        Timber.tag("resolveGameAppId").w("NOT_FOUND: appId=%s gameId=%d gameSource=%s", appId, gameId, gameSource)
         return GameResolutionResult.NotFound(
             gameId = gameId,
             originalAppId = appId,
@@ -207,6 +209,7 @@ private fun resolveGameAppId(context: Context, appId: String): GameResolutionRes
     val isSteamInstalled = gameSource == GameSource.STEAM && isInstalled
     val isCustomGame = gameSource == GameSource.CUSTOM_GAME
 
+    Timber.tag("resolveGameAppId").i("SUCCESS: appId=%s gameId=%d gameSource=%s isCustomGame=%b", appId, gameId, gameSource, isCustomGame)
     return GameResolutionResult.Success(
         finalAppId = appId,
         gameId = gameId,
@@ -219,18 +222,23 @@ private fun resolveGameAppId(context: Context, appId: String): GameResolutionRes
 /** Check if launch should be deferred — Steam needs login, GOG/Epic/Amazon need service startup */
 private fun needsDeferLaunch(context: Context, appId: String): Boolean {
     val gameSource = ContainerUtils.extractGameSourceFromContainerId(appId)
-    return when (gameSource) {
+    val result = when (gameSource) {
         GameSource.STEAM -> {
-            if (SteamService.isLoggedIn) return false
-            // isLoggedIn is network-gated (requires LoggedOnCallback). allow offline launch when
-            // saved creds + local container exist — Steam can reconnect in background.
-            !(SteamUtils.hasStoredCredentials() && ContainerUtils.hasContainer(context, appId))
+            if (SteamService.isLoggedIn) {
+                Timber.tag("needsDeferLaunch").d("STEAM %s -> false (logged in)", appId)
+                return false
+            }
+            val defer = !(SteamUtils.hasStoredCredentials() && ContainerUtils.hasContainer(context, appId))
+            Timber.tag("needsDeferLaunch").d("STEAM %s -> %b", appId, defer)
+            defer
         }
-        GameSource.GOG -> !GOGService.isRunning
-        GameSource.EPIC -> !EpicService.isRunning
-        GameSource.AMAZON -> !AmazonService.isRunning
-        else -> false
+        GameSource.GOG -> !GOGService.isRunning.also { Timber.tag("needsDeferLaunch").d("GOG %s -> %b", appId, it) }
+        GameSource.EPIC -> !EpicService.isRunning.also { Timber.tag("needsDeferLaunch").d("EPIC %s -> %b", appId, it) }
+        GameSource.AMAZON -> !AmazonService.isRunning.also { Timber.tag("needsDeferLaunch").d("AMAZON %s -> %b", appId, it) }
+        else -> false.also { Timber.tag("needsDeferLaunch").d("CUSTOM_GAME %s -> false (no defer)", appId) }
     }
+    Timber.tag("needsDeferLaunch").d("result=%b", result)
+    result
 }
 
 /** Show snackbar for a deferred launch based on the game's source. Returns true if shown. */
@@ -346,6 +354,7 @@ fun PluviaMain(
     // shared intent-launch path. resolves isOffline at the call site because intent launches can
     // arrive pre-login (cold-boot via stored creds) and downstream cloud-sync needs a settled answer.
     val launchIntentApp: (resolvedAppId: String, hasTemporaryOverride: Boolean) -> Unit = { resolvedAppId, hasTemporaryOverride ->
+        Timber.tag("launchIntentApp").i("entry: resolvedAppId=%s hasTemporaryOverride=%b", resolvedAppId, hasTemporaryOverride)
         val requestedGameId = runCatching { ContainerUtils.extractGameIdFromContainerId(resolvedAppId) }.getOrNull()
         if (SteamService.keepAlive && requestedGameId != null && ActiveGameRegistry.get()?.appId == requestedGameId) {
             Timber.i("[PluviaMain]: Game $resolvedAppId already running; bringing XServer screen forward")
@@ -1576,36 +1585,38 @@ fun preLaunchApp(
     isOffline: Boolean = false,
     bootToContainer: Boolean = false,
 ) {
+    Timber.tag("preLaunchApp").i("entry: appId=%s useTemporaryOverride=%b bootToContainer=%b isOffline=%b",
+        appId, useTemporaryOverride, bootToContainer, isOffline)
     setLoadingDialogVisible(true)
-    // TODO: add a way to cancel
-    // TODO: add fail conditions
 
     val gameId = ContainerUtils.extractGameIdFromContainerId(appId)
+    Timber.tag("preLaunchApp").d("extracted gameId=%d", gameId)
 
     CoroutineScope(Dispatchers.IO).launch {
         if (LaunchReadiness.pending) {
+            Timber.tag("preLaunchApp").i("LaunchReadiness pending, resolving")
             setLoadingDialogVisible(false)
             (context as? Activity)?.let { LaunchReadiness.resolve(it) }
             return@launch
         }
 
-        // create container if it does not already exist
-        // TODO: combine somehow with container creation in HomeLibraryAppScreen
+        Timber.tag("preLaunchApp").d("Phase 1: creating/getting container")
         val containerManager = ContainerManager(context)
         val container = if (useTemporaryOverride) {
             ContainerUtils.getOrCreateContainerWithOverride(context, appId)
         } else {
             ContainerUtils.getOrCreateContainer(context, appId)
         }
+        Timber.tag("preLaunchApp").d("container ready: id=%s wineVersion=%s variant=%s",
+            container.id, container.wineVersion, container.containerVariant)
 
-        // Clear session metadata on every launch to ensure fresh values
         container.clearSessionMetadata()
 
         val gameSource = ContainerUtils.extractGameSourceFromContainerId(appId)
         val isLocalSavesOnly = ContainerUtils.isLocalSavesOnly(context, appId)
+        Timber.tag("preLaunchApp").d("gameSource=%s isLocalSavesOnly=%b", gameSource, isLocalSavesOnly)
 
-        // Migrate legacy on-disk imagefs layout (e.g. legacy Proton → shared paths) before manifest
-        // installs or launch deps — resolveMissingManifestInstallRequests can install Proton too.
+        Timber.tag("preLaunchApp").d("Phase 2: legacy ImageFS migration check")
         val legacyImageFsRoot = File(context.filesDir, "imagefs")
         val migrationOk = ImageFSLegacyMigrator.migrateLegacyDirsIfNeeded(
             context,
@@ -1613,9 +1624,7 @@ fun preLaunchApp(
             container.wineVersion,
         )
         if (!migrationOk) {
-            Timber.tag("preLaunchApp").e(
-                "Legacy ImageFS migration failed: ${legacyImageFsRoot.absolutePath}",
-            )
+            Timber.tag("preLaunchApp").e("Legacy ImageFS migration FAILED: %s", legacyImageFsRoot.absolutePath)
             setLoadingDialogVisible(false)
             setMessageDialogState(
                 MessageDialogState(
@@ -1629,9 +1638,8 @@ fun preLaunchApp(
             return@launch
         }
 
-        // When "Open container" is used we boot to desktop/file manager only — skip executable check
+        Timber.tag("preLaunchApp").d("Phase 3: executable check (bootToContainer=%b)", bootToContainer)
         if (!bootToContainer) {
-            // Verify we have a launch executable for all platforms before proceeding (fail fast, avoid black screen)
             val effectiveExe = when (gameSource) {
                 GameSource.STEAM -> SteamService.getLaunchExecutable(appId, container)
                 GameSource.GOG -> GOGService.getLaunchExecutable(appId, container)
@@ -1639,8 +1647,9 @@ fun preLaunchApp(
                 GameSource.CUSTOM_GAME -> CustomGameScanner.getLaunchExecutable(container)
                 GameSource.AMAZON -> AmazonService.getLaunchExecutable(appId)
             }
+            Timber.tag("preLaunchApp").d("effectiveExe='%s' (gameSource=%s)", effectiveExe, gameSource)
             if (effectiveExe.isBlank()) {
-                Timber.tag("preLaunchApp").w("Cannot launch $appId: no executable found (game source: $gameSource)")
+                Timber.tag("preLaunchApp").w("EXECUTABLE_NOT_FOUND: appId=%s gameSource=%s", appId, gameSource)
                 setLoadingDialogVisible(false)
                 setMessageDialogState(
                     MessageDialogState(
@@ -1656,13 +1665,15 @@ fun preLaunchApp(
             }
         }
 
-        // download any manifest components (wine/proton, dxvk, etc.) missing from config
+        Timber.tag("preLaunchApp").d("Phase 4: manifest component check (supportsKnownConfigAutoApply=%b for %s)",
+            ContainerUtils.supportsKnownConfigAutoApply(gameSource), gameSource)
         if (ContainerUtils.supportsKnownConfigAutoApply(gameSource)) {
             try {
                 val configJson = Json.parseToJsonElement(container.containerJson).jsonObject
                 val missingRequests = BestConfigService.resolveMissingManifestInstallRequests(
                     context, configJson, "exact_gpu_match",
                 )
+                Timber.tag("preLaunchApp").d("missing manifest requests: %d", missingRequests.size)
                 for (request in missingRequests) {
                     setLoadingMessage(context.getString(R.string.main_downloading_entry, request.entry.name))
                     try {
@@ -1680,11 +1691,8 @@ fun preLaunchApp(
             }
         }
 
-        // Check if this is a Custom Game and validate executable selection before installing components
-        // Skip the check if booting to container (Open Container menu option)
         val isCustomGame = gameSource == GameSource.CUSTOM_GAME
-
-        // set up Ubuntu file system — download required files and install
+        Timber.tag("preLaunchApp").d("Phase 5: SplitCompat install + launch dependencies (isCustomGame=%b)", isCustomGame)
         SplitCompat.install(context)
 
         try {
@@ -1711,9 +1719,10 @@ fun preLaunchApp(
             return@launch
         }
 
+        Timber.tag("preLaunchApp").d("Phase 6: downloading container files (variant=%s)", container.containerVariant)
         try {
             if (!SteamService.isImageFsInstallable(context, container.containerVariant)) {
-                setLoadingMessage("Downloading first-time files")
+                Timber.tag("preLaunchApp").d("Downloading first-time files (ImageFS)")
                 SteamService.downloadImageFs(
                     onDownloadProgress = { setLoadingProgress(it / 1.0f) },
                     this,
@@ -1724,7 +1733,7 @@ fun preLaunchApp(
             if (container.containerVariant.equals(Container.GLIBC) &&
                 !SteamService.isFileInstallable(context, "imagefs_patches_gamenative.tzst")
             ) {
-                setLoadingMessage("Downloading Wine")
+                Timber.tag("preLaunchApp").d("Downloading Wine (ImageFS patches)")
                 SteamService.downloadImageFsPatches(
                     onDownloadProgress = { setLoadingProgress(it / 1.0f) },
                     this,
@@ -1735,7 +1744,7 @@ fun preLaunchApp(
             if (!container.isUseLegacyDRM && !container.isLaunchRealSteam &&
                 !SteamService.isFileInstallable(context, "experimental-drm-20260116.tzst")
             ) {
-                setLoadingMessage("Downloading extras")
+                Timber.tag("preLaunchApp").d("Downloading DRM extras")
                 SteamService.downloadFile(
                     onDownloadProgress = { setLoadingProgress(it / 1.0f) },
                     this,
@@ -1744,7 +1753,7 @@ fun preLaunchApp(
                 ).await()
             }
             if ((container.isLaunchRealSteam || container.isLaunchBionicSteam) && !SteamService.isFileInstallable(context, "steam.tzst")) {
-                setLoadingMessage(context.getString(R.string.main_downloading_steam))
+                Timber.tag("preLaunchApp").d("Downloading Steam runtime")
                 SteamService.downloadSteam(
                     onDownloadProgress = { setLoadingProgress(it / 1.0f) },
                     this,
@@ -1752,7 +1761,7 @@ fun preLaunchApp(
                 ).await()
             }
             if ((container.isLaunchRealSteam || container.isLaunchBionicSteam) && !SteamService.isFileInstallable(context, "steam-token.tzst")) {
-                setLoadingMessage("Downloading steam-token")
+                Timber.tag("preLaunchApp").d("Downloading Steam token")
                 SteamService.downloadFile(
                     onDownloadProgress = { setLoadingProgress(it / 1.0f) },
                     this,
@@ -1775,6 +1784,7 @@ fun preLaunchApp(
             return@launch
         }
 
+        Timber.tag("preLaunchApp").d("Phase 7: ImageFS install")
         val loadingMessage = if (container.containerVariant.equals(Container.GLIBC)) {
             context.getString(R.string.main_installing_glibc)
         } else {
@@ -1787,7 +1797,7 @@ fun preLaunchApp(
             }.get()
 
         if (!imageFsInstallSuccess) {
-            Timber.tag("preLaunchApp").e("ImageFS installation failed")
+            Timber.tag("preLaunchApp").e("ImageFS installation FAILED")
             setLoadingDialogVisible(false)
             setMessageDialogState(
                 MessageDialogState(
@@ -1804,13 +1814,12 @@ fun preLaunchApp(
         setLoadingMessage(context.getString(R.string.main_loading))
         setLoadingProgress(-1f)
 
-        // must activate container before downloading save files
+        Timber.tag("preLaunchApp").d("Phase 8: activating container")
         containerManager.activateContainer(container)
+        Timber.tag("preLaunchApp").d("container activated")
 
-        // If another Steam game is running on this account elsewhere, prompt the user.
-        // Skip the prompt for apps we don't recognise — non-Steam shortcuts on the remote
-        // device report synthetic IDs that aren't kickable.
         val isSteamGame = gameSource == GameSource.STEAM
+        Timber.tag("preLaunchApp").d("Phase 9: Steam playing-elsewhere check (isSteamGame=%b)", isSteamGame)
         if (isSteamGame) {
             try {
                 val currentPlaying = SteamService.getSelfCurrentlyPlayingAppId()

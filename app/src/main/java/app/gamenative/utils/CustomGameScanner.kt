@@ -365,7 +365,12 @@ object CustomGameScanner {
      * When container has a configured path, verifies the file exists to avoid launching stale/missing paths.
      */
     fun getLaunchExecutable(container: Container): String {
-        val gameFolderPath = ContainerUtils.getADrivePath(container.drives) ?: return ""
+        val gameFolderPath = ContainerUtils.getADrivePath(container.drives)
+        Timber.tag("CustomGameScanner").d("getLaunchExecutable: A: drive path=%s", gameFolderPath)
+        if (gameFolderPath == null) {
+            Timber.tag("CustomGameScanner").w("getLaunchExecutable: no A: drive found, drives=%s", container.drives)
+            return ""
+        }
 
         // Check container's configured executable path
         val exe = container.executablePath
@@ -788,7 +793,7 @@ object CustomGameScanner {
      * Returns null if the folder cannot be found.
      */
     fun getFolderPathFromAppId(appId: String): String? {
-        // Extract the ID from appId (format: "CUSTOM_GAME_<id>")
+        Timber.tag("CustomGameScanner").d("getFolderPathFromAppId: appId=%s", appId)
         if (!appId.startsWith("${GameSource.CUSTOM_GAME.name}_")) {
             Timber.tag("CustomGameScanner").d("appId doesn't start with CUSTOM_GAME_: $appId")
             return null
@@ -802,12 +807,20 @@ object CustomGameScanner {
             return null
         }
 
-        // First check the regular cache (manually added folders)
         val cached = findCustomGameById(expectedId)
-        if (cached != null) return cached
+        if (cached != null) {
+            Timber.tag("CustomGameScanner").d("getFolderPathFromAppId: cache hit -> %s", cached)
+            return cached
+        }
 
-        // Fallback: check runtime-imported games (filesDir/games/<gameId>/)
-        return resolveRuntimeGameFolder(expectedId)
+        Timber.tag("CustomGameScanner").d("getFolderPathFromAppId: cache miss, fallback to resolveRuntimeGameFolder(%d)", expectedId)
+        val runtimePath = resolveRuntimeGameFolder(expectedId)
+        if (runtimePath != null) {
+            Timber.tag("CustomGameScanner").d("getFolderPathFromAppId: runtime fallback found -> %s", runtimePath)
+        } else {
+            Timber.tag("CustomGameScanner").w("getFolderPathFromAppId: not found anywhere (expectedId=%d)", expectedId)
+        }
+        return runtimePath
     }
 
     /**
